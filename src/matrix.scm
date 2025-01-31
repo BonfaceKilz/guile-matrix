@@ -32,34 +32,13 @@
 			       ":")
 		      proc))
 
-(define (round-off z n)
-  (let ((power (expt 10 n)))
-    (/ (round (* power z)) power)))
-
-(define (lmdb-save-floats path key values)
-  "Save a list of floating point VALUES with KEY into lmdb PATH"
+(define* (lmdb-save path key num)
+  "Save a NUM with KEY to PATH."
   (mdb:with-env-and-txn
    (path) (env txn)
-   (let ((dbi (mdb:dbi-open txn #f 0))
-	 (vector-size (make-c-struct (list int) (list (length values))))
-	 (s (make-c-struct (make-list (length values) float)
-			   values)))
+   (let ((dbi (mdb:dbi-open txn #f 0)))
      (mdb:put txn dbi key
-	      (mdb:make-val s (apply + (make-list (length values) (sizeof float)))))
-     (mdb:put txn dbi "size"
-	      (mdb:make-val vector-size
-			    (sizeof int))))))
-
-(define (lmdb-get-floats path key)
-  "Get a list of floating point values given PATH and a KEY"
-  (mdb:with-env-and-txn
-   (path) (env txn)
-   (let* ((dbi (mdb:dbi-open txn #f 0))
-	  (data (mdb:get txn dbi key))
-	  (size (car (mdb:val-data-parse (mdb:get txn dbi "size")
-					 (list int)))))
-     (map (lambda (n) (round-off n 6))
-	  (mdb:val-data-parse data (make-list size float))))))
+	      (number->string num)))))
 
 (define (sql-exec db statement)
   (dbi-query db statement)
@@ -89,14 +68,17 @@
      (unless (zero? code)
        (error str)))))
 
-;; Example of storing values.
-(call-with-target-database
- *connection-settings*
- (lambda (db)
-   (let* ((data (sql-map (lambda (x) x)
-			 db "SELECT
-    Strain.Name as name,
-    PublishData.value as value
+(define (save-dataset-values)
+  (call-with-target-database
+   *connection-settings*
+   (lambda (db)
+     (sql-for-each
+      (lambda (row)
+	(match row
+	  ((("Name" . dataset-name)
+	    ("Id" . trait-id))
+	   (let* ((data-dir (format #f "/export5/lmdb-data/~a-~a/" dataset-name trait-id))
+		  (data-query (format #f "SELECT Strain.Name as name, PublishData.value as value
 FROM
     PublishData
     INNER JOIN Strain ON PublishData.StrainId = Strain.Id
@@ -109,13 +91,42 @@ LEFT JOIN NStrain ON
     NStrain.DataId = PublishData.Id AND
     NStrain.StrainId = PublishData.StrainId
 WHERE
-	PublishXRef.Id = 10007 AND
-	PublishFreeze.Id = 1 AND
+    PublishFreeze.Name = \"~a\" AND
+    PublishXRef.Id = ~a AND
+    PublishFreeze.public > 0 AND
+    PublishData.value IS NOT NULL AND
+    PublishFreeze.confidentiality < 1
+ORDER BY
+    LENGTH(Strain.Name), Strain.Name" dataset-name trait-id)))
+	     (format #t "~a-~a" dataset-name trait-id)
+	     (newline)
+	     (call-with-target-database
+	      *connection-settings*
+	      (lambda (db2)
+		(sql-for-each
+		 (lambda (row)
+		   (match row
+		     ((("name" . strain-name)
+		       ("value" . strain-value))
+		      (unless (file-exists? data-dir)
+			(mkdir data-dir))
+		      (lmdb-save data-dir strain-name strain-value))))
+		 db2 data-query)))))))
+      db
+      "SELECT DISTINCT PublishFreeze.Name, PublishXRef.Id FROM
+PublishData INNER JOIN Strain ON PublishData.StrainId = Strain.Id
+INNER JOIN PublishXRef ON PublishData.Id = PublishXRef.DataId
+INNER JOIN PublishFreeze ON PublishXRef.InbredSetId = PublishFreeze.InbredSetId
+LEFT JOIN PublishSE ON
+    PublishSE.DataId = PublishData.Id AND
+    PublishSE.StrainId = PublishData.StrainId
+LEFT JOIN NStrain ON
+    NStrain.DataId = PublishData.Id AND
+    NStrain.StrainId = PublishData.StrainId
+WHERE
     PublishFreeze.public > 0 AND
     PublishFreeze.confidentiality < 1
 ORDER BY
-    LENGTH(Strain.Name), Strain.Name"))
-	  (strains (map (lambda (x) (assoc-ref x "name")) data))
-	  (values (map (lambda (x) (assoc-ref x "value")) data)))
-     (lmdb-save-floats "/tmp/test" "10007" (reverse values)))))
+    PublishFreeze.Id, PublishXRef.Id"))))
 
+(save-dataset-values)

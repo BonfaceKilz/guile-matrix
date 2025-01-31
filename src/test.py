@@ -1,8 +1,13 @@
 import lmdb
-import struct
+import sys
+import json
 
-env = lmdb.open('/tmp/test', max_dbs=2)
+env = lmdb.open(f'/export5/lmdb-data/{sys.argv[1]}-{sys.argv[2]}', max_dbs=2)
+
 with env.begin(write=True) as txn:
-    val = txn.get("10007".encode())
-    print(tuple(map(lambda x: round(x, 6),
-                    struct.unpack("<"+"f"*(len(val)//4), val))))
+    data = {}
+    with env.begin() as txn:
+        for x, _ in txn.cursor():
+            value = float(txn.get(x).decode())
+            data[x.decode()] = value
+    print(json.dumps(data))
