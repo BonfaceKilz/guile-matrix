@@ -4,7 +4,10 @@
 	     (ice-9 match)
 	     (srfi srfi-1)
 	     (srfi srfi-26)
+	     (rnrs io ports)
+	     (hashing md5)
 	     ((lmdb lmdb) #:prefix mdb:))
+
 
 (define *connection-settings*
   '((sql-username . "webqtlout")
@@ -77,7 +80,10 @@
 	(match row
 	  ((("Name" . dataset-name)
 	    ("Id" . trait-id))
-	   (let* ((data-dir (format #f "/export5/lmdb-data/~a-~a/" dataset-name trait-id))
+	   (let* ((md5-hash
+		   (md5->string (md5 (string->bytevector (format #f "~a-~a" dataset-name trait-id)
+							 (make-transcoder (utf-8-codec))))))
+		  (data-dir (format #f "/export5/lmdb-data-hashes/~a" md5-hash))
 		  (data-query (format #f "SELECT Strain.Name as name, PublishData.value as value
 FROM
     PublishData
@@ -98,7 +104,7 @@ WHERE
     PublishFreeze.confidentiality < 1
 ORDER BY
     LENGTH(Strain.Name), Strain.Name" dataset-name trait-id)))
-	     (format #t "~a-~a" dataset-name trait-id)
+	     (format #t "Writing ~a-~a to: ~a" dataset-name trait-id data-dir)
 	     (newline)
 	     (call-with-target-database
 	      *connection-settings*
